@@ -1,4 +1,14 @@
-import { HermesClient } from "@pythnetwork/hermes-client";
+/**
+ * tx.tsx – client-side Cardano transaction builders.
+ *
+ * depositA: Player A creates a duel (partial sign → backend co-signs + submits)
+ * depositB: Player B joins a duel  (partial sign → backend co-signs + submits)
+ *
+ * Both require backend co-signature because the NFT mint policy checks backend_pkh.
+ *
+ * Resolve is fully backend-side (see /api/onchain/resolve.ts).
+ */
+
 import {
   MeshTxBuilder,
   applyParamsToScript,
@@ -11,15 +21,13 @@ import {
 } from "@meshsdk/core";
 import { bech32 } from "bech32";
 
-const DEFAULT_FEED_A = 16; // ADA/USD
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-type TxInputRef = {
-  txHash: string;
-  outputIndex: number;
-};
+type TxInputRef = { txHash: string; outputIndex: number };
 
 type UtxoLike = {
   input: TxInputRef;
+  output: { amount: Array<{ unit: string; quantity: string }> };
 };
 
 type ProviderLike = {
@@ -27,18 +35,14 @@ type ProviderLike = {
 };
 
 type WalletLike = {
-  signTx: (unsignedTx: string, partialSign?: boolean, returnFullTx?: boolean) => Promise<string>;
+  signTx: (unsignedTx: string, partialSign?: boolean) => Promise<string>;
   submitTx: (signedTx: string) => Promise<string>;
 };
 
-type PlutusValidator = {
-  title: string;
-  compiledCode: string;
-};
+type PlutusValidator = { title: string; compiledCode: string };
+type PlutusJson = { validators: PlutusValidator[] };
 
-type PlutusJson = {
-  validators: PlutusValidator[];
-};
+// ─── Exported param / result types ───────────────────────────────────────────
 
 export type DepositAParams = {
   provider: ProviderLike;
@@ -56,7 +60,7 @@ export type DepositAParams = {
 };
 
 export type DepositAResult = {
-  partiallySignedTx: string; // user-signed CBOR, backend still needs to co-sign
+  partiallySignedTx: string;
   duelId: string;
   scriptAddress: string;
   spendScriptHash: string;
@@ -76,8 +80,9 @@ export type DepositBParams = {
   backendPkh: string;
   pythPolicyId: string;
   blockfrostId: string;
-  priceFeedIdA: string;
-  priceFeedIdB: string;
+  signedUpdateHex: string; // from /api/onchain/pyth-lazer-prices
+  startPriceA: number;     // raw Lazer price integer for feed A
+  startPriceB: number;     // raw Lazer price integer for feed B
   plutus: PlutusJson;
   feedA: number;
   feedB: number;
@@ -88,7 +93,7 @@ export type DepositBParams = {
 };
 
 export type DepositBResult = {
-  partiallySignedTx: string; // user-signed CBOR, backend still needs to co-sign
+  partiallySignedTx: string;
   deadlinePosix: number;
   startPriceA: number;
   startPriceB: number;
@@ -97,6 +102,9 @@ export type DepositBResult = {
   mintPolicyId: string;
 };
 
+// ─── CBOR / script helpers ────────────────────────────────────────────────────
+
+// Encode a hex string as a single CBOR byte-string (used for applyParamsToScript only).
 const cborBytesParam = (hex: string) => {
   const len = hex.length / 2;
   if (len < 24) return (0x40 | len).toString(16).padStart(2, "0") + hex;
@@ -108,6 +116,8 @@ const cborBytesParam = (hex: string) => {
     hex
   );
 };
+
+// ─── Plutus data helpers ──────────────────────────────────────────────────────
 
 const someD = (inner: unknown) => mConStr0([inner as never]);
 const noneD = () => mConStr1([]);
@@ -148,26 +158,14 @@ const duelDatumD = ({
 
 const outputRefD = (txHash: string, index: number) => mConStr0([txHash, index]);
 
+// ─── Utility ──────────────────────────────────────────────────────────────────
+
 function hexToBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new Error("Invalid hex length");
   const bytes = new Uint8Array(hex.length / 2);
   for (let i = 0; i < hex.length; i += 2) {
     bytes[i / 2] = Number.parseInt(hex.slice(i, i + 2), 16);
   }
   return bytes;
-}
-
-function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
-function u64beBytes(value: number): Uint8Array {
-  const view = new DataView(new ArrayBuffer(8));
-  view.setBigUint64(0, BigInt(value));
-  return new Uint8Array(view.buffer);
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -176,22 +174,30 @@ function bytesToHex(bytes: Uint8Array): string {
     .join("");
 }
 
+function u64beBytes(value: number): Uint8Array {
+  const view = new DataView(new ArrayBuffer(8));
+  view.setBigUint64(0, BigInt(value));
+  return new Uint8Array(view.buffer);
+}
+
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const data = new Uint8Array(bytes.byteLength);
-  data.set(bytes);
-  const digest = await crypto.subtle.digest("SHA-256", data);
+  const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const digest = await crypto.subtle.digest("SHA-256", buf);
   return bytesToHex(new Uint8Array(digest));
 }
 
 async function computeDuelId(txHash: string, outputIndex: number): Promise<string> {
   const txHashBytes = hexToBytes(txHash);
   const indexBytes = u64beBytes(outputIndex);
-  return sha256Hex(concatBytes(txHashBytes, indexBytes));
+  const combined = new Uint8Array(txHashBytes.length + indexBytes.length);
+  combined.set(txHashBytes, 0);
+  combined.set(indexBytes, txHashBytes.length);
+  return sha256Hex(combined);
 }
 
 function getCompiledCode(plutus: PlutusJson, title: string): string {
   const code = plutus.validators.find((v) => v.title === title)?.compiledCode;
-  if (!code) throw new Error(`Missing compiled code for validator title: ${title}`);
+  if (!code) throw new Error(`Missing compiled code for: ${title}`);
   return code;
 }
 
@@ -206,18 +212,15 @@ function deriveBetScripts({
   plutus: PlutusJson;
   networkId: 0 | 1;
 }) {
-  const nftCompiledCode = getCompiledCode(plutus, "nft.nft_policy.mint");
-  const betCompiledCode = getCompiledCode(plutus, "validators.bet.spend");
-
   const mintScriptCbor = applyParamsToScript(
-    nftCompiledCode,
+    getCompiledCode(plutus, "nft.nft_policy.mint"),
     [cborBytesParam(backendPkh)],
     "CBOR",
   );
   const mintPolicyId = resolveScriptHash(mintScriptCbor, "V3");
 
   const spendScriptCbor = applyParamsToScript(
-    betCompiledCode,
+    getCompiledCode(plutus, "validators.bet.spend"),
     [
       cborBytesParam(backendPkh),
       cborBytesParam(mintPolicyId),
@@ -233,31 +236,20 @@ function deriveBetScripts({
     false,
   ).address;
 
-  return {
-    mintScriptCbor,
-    mintPolicyId,
-    spendScriptCbor,
-    spendScriptHash,
-    scriptAddress,
-  };
+  return { mintScriptCbor, mintPolicyId, spendScriptCbor, spendScriptHash, scriptAddress };
 }
 
-function requiredString(name: string, value: string): string {
-  if (!value || !value.trim()) throw new Error(`Missing required value: ${name}`);
-  return value.trim();
-}
-
-function requiredNumber(name: string, value: number): number {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`${name} must be a positive number`);
-  }
-  return value;
-}
-
-function utf8ToHex(value: string): string {
-  return Array.from(new TextEncoder().encode(value))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+// Find a collateral UTxO that contains only lovelace (Cardano requirement).
+function findPureAdaUtxo(utxos: UtxoLike[]): TxInputRef {
+  const found = utxos.find(
+    (u) =>
+      u.output.amount.length === 1 && u.output.amount[0]?.unit === "lovelace",
+  );
+  if (!found)
+    throw new Error(
+      "No pure-ADA UTxO for collateral. Send a small ADA-only UTxO to your wallet.",
+    );
+  return found.input;
 }
 
 function scriptHashToRewardAddress(hash: string, networkId = 0): string {
@@ -265,7 +257,17 @@ function scriptHashToRewardAddress(hash: string, networkId = 0): string {
   const bytes = new Uint8Array(1 + hash.length / 2);
   bytes[0] = header;
   bytes.set(hexToBytes(hash), 1);
-  return bech32.encode(networkId === 0 ? "stake_test" : "stake", bech32.toWords(bytes), 200);
+  return bech32.encode(
+    networkId === 0 ? "stake_test" : "stake",
+    bech32.toWords(bytes),
+    200,
+  );
+}
+
+function utf8ToHex(value: string): string {
+  return Array.from(new TextEncoder().encode(value))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function getBlockfrostBaseUrl(network: "preprod" | "preview" | "mainnet"): string {
@@ -292,33 +294,41 @@ async function resolvePythState({
   const addresses = (await addrRes.json()) as Array<{ address: string }>;
   if (!addresses[0]?.address) throw new Error("Pyth state address not found");
 
-  const utxoRes = await fetch(`${base}/addresses/${addresses[0].address}/utxos/${unit}`, { headers });
+  const utxoRes = await fetch(
+    `${base}/addresses/${addresses[0].address}/utxos/${unit}`,
+    { headers },
+  );
   if (!utxoRes.ok) throw new Error(`Pyth UTxO lookup failed: ${await utxoRes.text()}`);
-  const utxos = (await utxoRes.json()) as Array<{ tx_hash: string; output_index: number; data_hash?: string }>;
+  const utxos = (await utxoRes.json()) as Array<{
+    tx_hash: string;
+    output_index: number;
+    data_hash?: string;
+  }>;
   const stateUtxo = utxos[0];
   if (!stateUtxo) throw new Error("Pyth state UTxO not found");
 
   let datum: unknown;
   if (stateUtxo.data_hash) {
-    const datumRes = await fetch(`${base}/scripts/datum/${stateUtxo.data_hash}`, { headers });
-    if (datumRes.ok) {
-      const payload = (await datumRes.json()) as { json_value?: unknown };
-      datum = payload.json_value;
-    }
+    const r = await fetch(`${base}/scripts/datum/${stateUtxo.data_hash}`, { headers });
+    if (r.ok) datum = ((await r.json()) as { json_value?: unknown }).json_value;
   }
   if (!datum) {
-    const txRes = await fetch(`${base}/txs/${stateUtxo.tx_hash}/utxos`, { headers });
-    if (!txRes.ok) throw new Error(`Pyth tx lookup failed: ${await txRes.text()}`);
-    const txPayload = (await txRes.json()) as {
+    const r = await fetch(`${base}/txs/${stateUtxo.tx_hash}/utxos`, { headers });
+    if (!r.ok) throw new Error(`Pyth tx lookup failed: ${await r.text()}`);
+    const payload = (await r.json()) as {
       outputs?: Array<{ output_index: number; inline_datum?: unknown }>;
     };
-    datum = txPayload.outputs?.find((output) => output.output_index === stateUtxo.output_index)?.inline_datum;
+    datum = payload.outputs?.find((o) => o.output_index === stateUtxo.output_index)?.inline_datum;
   }
   if (!datum || typeof datum !== "object") throw new Error("Pyth datum not found");
 
-  const fields = (datum as { fields?: Array<{ bytes?: string }>; constructor?: { fields?: Array<{ bytes?: string }> } })
-    .fields ??
-    (datum as { constructor?: { fields?: Array<{ bytes?: string }> } }).constructor?.fields;
+  const fields = (
+    datum as {
+      fields?: Array<{ bytes?: string }>;
+      constructor?: { fields?: Array<{ bytes?: string }> };
+    }
+  ).fields ?? (datum as { constructor?: { fields?: Array<{ bytes?: string }> } }).constructor?.fields;
+
   if (!fields || fields.length < 4 || !fields[3]?.bytes) {
     throw new Error("Unexpected Pyth datum shape");
   }
@@ -337,31 +347,7 @@ async function resolvePythState({
   };
 }
 
-async function fetchSignedPrices({
-  priceFeedIds,
-}: {
-  priceFeedIds: [string, string];
-}) {
-  const client = new HermesClient("https://hermes.pyth.network", {});
-  const response = await client.getLatestPriceUpdates(priceFeedIds, {
-    encoding: "hex",
-    parsed: true,
-  });
-
-  if (!response.binary.data[0]) throw new Error("Missing signed Pyth payload");
-
-  return {
-    signedUpdateHex: response.binary.data[0],
-    parsedPrices: (response.parsed ?? []).map((feed: {
-      id: string;
-      price: { price: string; expo: number };
-    }) => ({
-      priceFeedId: feed.id,
-      price: Number(feed.price.price),
-      exponent: Number(feed.price.expo),
-    })),
-  };
-}
+// ─── depositA ─────────────────────────────────────────────────────────────────
 
 export async function depositA({
   provider,
@@ -372,46 +358,32 @@ export async function depositA({
   backendPkh,
   pythPolicyId,
   plutus,
-  feedA = DEFAULT_FEED_A,
+  feedA = 16,
   bet_lovelace,
   network = "preprod",
   networkId = 0,
 }: DepositAParams): Promise<DepositAResult> {
-  if (!utxos.length) {
-    throw new Error("No UTxOs available in wallet");
-  }
-
-  const sanitizedBackendPkh = requiredString("backendPkh", backendPkh);
-  const sanitizedPythPolicyId = requiredString("pythPolicyId", pythPolicyId);
-  const sanitizedAddress = requiredString("playerOneAddress", playerOneAddress);
-  const sanitizedPlayerPkh =
-    playerPkh?.trim() && playerPkh.trim().length > 0
-      ? playerPkh.trim()
-      : resolvePaymentKeyHash(sanitizedAddress);
-  if (!Number.isFinite(bet_lovelace) || bet_lovelace <= 0) {
+  if (!utxos.length) throw new Error("No UTxOs available in wallet");
+  if (!Number.isFinite(bet_lovelace) || bet_lovelace <= 0)
     throw new Error("bet_lovelace must be a positive number");
-  }
-  const finalBetLovelace = bet_lovelace;
 
-  const { mintScriptCbor, mintPolicyId, spendScriptHash, scriptAddress } = deriveBetScripts({
-    backendPkh: sanitizedBackendPkh,
-    pythPolicyId: sanitizedPythPolicyId,
-    plutus,
-    networkId,
-  });
+  const playerOnePkh =
+    playerPkh?.trim() || resolvePaymentKeyHash(playerOneAddress);
+
+  const { mintScriptCbor, mintPolicyId, spendScriptHash, scriptAddress } =
+    deriveBetScripts({ backendPkh, pythPolicyId, plutus, networkId });
 
   const seed = utxos[0].input;
-  const collateral = utxos[1]?.input ?? seed;
+  const collateral = findPureAdaUtxo(utxos);
   const duelId = await computeDuelId(seed.txHash, seed.outputIndex);
 
   const datum = duelDatumD({
     duelId,
-    playerA: { pkh: sanitizedPlayerPkh, feedId: feedA, startPrice: null },
-    betLovelace: finalBetLovelace,
+    playerA: { pkh: playerOnePkh, feedId: feedA, startPrice: null },
+    betLovelace: bet_lovelace,
   });
 
   const mintRedeemer = mConStr0([outputRefD(seed.txHash, seed.outputIndex)]);
-
   const nowSlot = resolveSlotNo(network, Date.now());
 
   let tx = new MeshTxBuilder({ fetcher: provider as never, submitter: provider as never });
@@ -423,30 +395,25 @@ export async function depositA({
   tx = tx.mint("1", mintPolicyId, duelId);
   tx = tx.mintingScript(mintScriptCbor);
   tx = tx.mintRedeemerValue(mintRedeemer);
-  tx = tx.requiredSignerHash(sanitizedBackendPkh); // backend must co-sign for the NFT mint policy
+  tx = tx.requiredSignerHash(backendPkh);
   tx = tx.txOut(scriptAddress, [
-    { unit: "lovelace", quantity: String(finalBetLovelace) },
+    { unit: "lovelace", quantity: String(bet_lovelace) },
     { unit: mintPolicyId + duelId, quantity: "1" },
   ]);
   tx = tx.txOutInlineDatumValue(datum);
-  tx = tx.changeAddress(sanitizedAddress);
+  tx = tx.changeAddress(playerOneAddress);
   tx = tx.selectUtxosFrom(utxos as never);
 
   console.log("[depositA] building tx...");
   const unsigned = await tx.complete();
-  console.log("[depositA] tx built, requesting wallet signature (partial)...");
-  // partialSign=true: user signs their inputs; backend still needs to co-sign for the NFT mint
+  console.log("[depositA] requesting wallet partial signature...");
   const partiallySignedTx = await wallet.signTx(unsigned, true);
-  console.log("[depositA] wallet signed OK, returning to frontend for backend co-sign...");
+  console.log("[depositA] partial signature ok");
 
-  return {
-    partiallySignedTx,
-    duelId,
-    scriptAddress,
-    spendScriptHash,
-    mintPolicyId,
-  };
+  return { partiallySignedTx, duelId, scriptAddress, spendScriptHash, mintPolicyId };
 }
+
+// ─── depositB ─────────────────────────────────────────────────────────────────
 
 export async function depositB({
   provider,
@@ -461,8 +428,9 @@ export async function depositB({
   backendPkh,
   pythPolicyId,
   blockfrostId,
-  priceFeedIdA,
-  priceFeedIdB,
+  signedUpdateHex,
+  startPriceA,
+  startPriceB,
   plutus,
   feedA,
   feedB,
@@ -471,101 +439,73 @@ export async function depositB({
   network = "preprod",
   networkId = 0,
 }: DepositBParams): Promise<DepositBResult> {
-  if (!utxos.length) {
-    throw new Error("No UTxOs available in wallet");
-  }
+  if (!utxos.length) throw new Error("No UTxOs available in wallet");
 
-  const sanitizedBackendPkh = requiredString("backendPkh", backendPkh);
-  const sanitizedPythPolicyId = requiredString("pythPolicyId", pythPolicyId);
-  const sanitizedBlockfrostId = requiredString("blockfrostId", blockfrostId);
-  const sanitizedPriceFeedIdA = requiredString("priceFeedIdA", priceFeedIdA);
-  const sanitizedPriceFeedIdB = requiredString("priceFeedIdB", priceFeedIdB);
-  const sanitizedPlayerOnePkh = requiredString("playerOnePkh", playerOnePkh);
-  const sanitizedPlayerTwoAddress = requiredString("playerTwoAddress", playerTwoAddress);
-  const sanitizedPlayerTwoPkh =
-    playerTwoPkh?.trim() && playerTwoPkh.trim().length > 0
-      ? playerTwoPkh.trim()
-      : resolvePaymentKeyHash(sanitizedPlayerTwoAddress);
-  const sanitizedDepositATxHash = requiredString("depositATxHash", depositATxHash);
-  requiredString("duelId", duelId);
-  requiredNumber("feedA", feedA);
-  requiredNumber("feedB", feedB);
-  const finalBetLovelace = requiredNumber("bet_lovelace", bet_lovelace);
-  const finalDuelDuration = requiredNumber("duelDuration", duelDuration);
+  const playerB_pkh = playerTwoPkh?.trim() || resolvePaymentKeyHash(playerTwoAddress);
 
-  const { mintPolicyId, spendScriptCbor, spendScriptHash, scriptAddress } = deriveBetScripts({
-    backendPkh: sanitizedBackendPkh,
-    pythPolicyId: sanitizedPythPolicyId,
-    plutus,
-    networkId,
-  });
+  const { mintPolicyId, spendScriptCbor, spendScriptHash, scriptAddress } =
+    deriveBetScripts({ backendPkh, pythPolicyId, plutus, networkId });
 
-  const pythState = await resolvePythState({
-    blockfrostId: sanitizedBlockfrostId,
-    pythPolicyId: sanitizedPythPolicyId,
-    network,
-  });
+  const pythState = await resolvePythState({ blockfrostId, pythPolicyId, network });
   const pythRewardAddress = scriptHashToRewardAddress(pythState.withdrawScriptHash, networkId);
 
-  const { signedUpdateHex, parsedPrices } = await fetchSignedPrices({
-    priceFeedIds: [sanitizedPriceFeedIdA, sanitizedPriceFeedIdB],
-  });
-  const priceA = parsedPrices.find((price: { priceFeedId: string }) => price.priceFeedId === sanitizedPriceFeedIdA);
-  const priceB = parsedPrices.find((price: { priceFeedId: string }) => price.priceFeedId === sanitizedPriceFeedIdB);
-  if (!priceA || !priceB) {
-    throw new Error("Missing starting prices for one or more feeds");
-  }
-
-  const startPriceA = priceA.price;
-  const startPriceB = priceB.price;
-  const deadlinePosix = Date.now() + finalDuelDuration;
-  const totalPot = finalBetLovelace * 2;
+  const deadlinePosix = Date.now() + duelDuration;
+  const totalPot = bet_lovelace * 2;
 
   const newDatum = duelDatumD({
     duelId,
-    playerA: { pkh: sanitizedPlayerOnePkh, feedId: feedA, startPrice: startPriceA },
-    playerB: { pkh: sanitizedPlayerTwoPkh, feedId: feedB, startPrice: startPriceB },
-    betLovelace: finalBetLovelace,
+    playerA: { pkh: playerOnePkh, feedId: feedA, startPrice: startPriceA },
+    playerB: { pkh: playerB_pkh, feedId: feedB, startPrice: startPriceB },
+    betLovelace: bet_lovelace,
     statusIdx: 1,
     deadline: deadlinePosix,
   });
 
-  const joinRedeemer = mConStr0([sanitizedPlayerTwoPkh, feedB]);
-  const collateral = utxos[0].input;
+  const joinRedeemer = mConStr0([playerB_pkh, feedB]);
+  const collateral = findPureAdaUtxo(utxos);
   const nowSlot = resolveSlotNo(network, Date.now());
 
-  let tx = new MeshTxBuilder({ fetcher: provider as never, submitter: provider as never });
-  tx = tx.invalidBefore(Number(nowSlot) - 600);
-  tx = tx.invalidHereafter(Number(nowSlot) + 600);
-  tx = tx.txInCollateral(collateral.txHash, collateral.outputIndex);
-  tx = tx.requiredSignerHash(sanitizedBackendPkh);
-  tx = tx.withdrawalPlutusScriptV3();
-  tx = tx.withdrawal(pythRewardAddress, "0");
-  tx = tx.withdrawalTxInReference(
-    pythState.txHash,
-    pythState.txIndex,
-    String(pythState.scriptSize),
-    pythState.withdrawScriptHash,
-  );
-  tx = tx.withdrawalRedeemerValue(mConStr0([signedUpdateHex]));
-  tx = tx.spendingPlutusScriptV3();
-  tx = tx.txIn(sanitizedDepositATxHash, depositATxIndex);
-  tx = tx.txInInlineDatumPresent();
-  tx = tx.txInRedeemerValue(joinRedeemer);
-  tx = tx.txInScript(spendScriptCbor);
-  tx = tx.txOut(scriptAddress, [
-    { unit: "lovelace", quantity: String(totalPot) },
-    { unit: mintPolicyId + duelId, quantity: "1" },
-  ]);
-  tx = tx.txOutInlineDatumValue(newDatum);
-  tx = tx.changeAddress(sanitizedPlayerTwoAddress);
-  tx = tx.selectUtxosFrom(utxos as never);
+  const tx = new MeshTxBuilder({ fetcher: provider as never, submitter: provider as never });
+
+  tx
+    .invalidBefore(Number(nowSlot) - 600)
+    .invalidHereafter(Number(nowSlot) + 600)
+    .txInCollateral(collateral.txHash, collateral.outputIndex)
+    .requiredSignerHash(backendPkh)
+
+    // Pyth zero-withdrawal: redeemer is a plain JS array → MeshJS handles chunking
+    .withdrawalPlutusScriptV3()
+    .withdrawal(pythRewardAddress, "0")
+    .withdrawalTxInReference(
+      pythState.txHash,
+      pythState.txIndex,
+      String(pythState.scriptSize),
+      pythState.withdrawScriptHash,
+    )
+    .withdrawalRedeemerValue([signedUpdateHex])
+
+    // Spend the DepositA UTxO (Waiting → Active)
+    .spendingPlutusScriptV3()
+    .txIn(depositATxHash, depositATxIndex)
+    .txInInlineDatumPresent()
+    .txInRedeemerValue(joinRedeemer)
+    .txInScript(spendScriptCbor)
+
+    // Output: 2× bet + NFT at script with Active datum
+    .txOut(scriptAddress, [
+      { unit: "lovelace", quantity: String(totalPot) },
+      { unit: mintPolicyId + duelId, quantity: "1" },
+    ])
+    .txOutInlineDatumValue(newDatum)
+
+    .changeAddress(playerTwoAddress)
+    .selectUtxosFrom(utxos as never);
 
   console.log("[depositB] building tx...");
   const unsigned = await tx.complete();
-  console.log("[depositB] tx built, requesting wallet signature (partial)...");
+  console.log("[depositB] requesting wallet partial signature...");
   const partiallySignedTx = await wallet.signTx(unsigned, true);
-  console.log("[depositB] wallet signed OK, returning to frontend for backend co-sign...");
+  console.log("[depositB] partial signature ok");
 
   return {
     partiallySignedTx,

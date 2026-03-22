@@ -23,6 +23,8 @@ export default function GameLobbyPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [origin, setOrigin] = useState("");
+  const [resolving, setResolving] = useState(false);
+  const [resolveResult, setResolveResult] = useState<{ txHash?: string; error?: string } | null>(null);
   const id = useMemo(() => {
     const value = router.query.id;
     return typeof value === "string" ? value : "";
@@ -79,6 +81,25 @@ export default function GameLobbyPage() {
   async function copyText(text: string) {
     if (!text) return;
     await navigator.clipboard.writeText(text);
+  }
+
+  async function handleResolve() {
+    if (!id) return;
+    setResolving(true);
+    setResolveResult(null);
+    try {
+      const res = await fetch("/api/onchain/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gameId: id }),
+      });
+      const data = (await res.json()) as { txHash?: string; error?: string };
+      setResolveResult(data);
+    } catch (err) {
+      setResolveResult({ error: err instanceof Error ? err.message : "Resolve failed" });
+    } finally {
+      setResolving(false);
+    }
   }
 
   return (
@@ -191,6 +212,44 @@ export default function GameLobbyPage() {
                     />
                   </div>
                 )}
+
+                {/* Resolve section — shown when deadline has passed and game is active */}
+                {game.status === "ready" &&
+                  game.onchain.deadlinePosix != null &&
+                  Date.now() >= game.onchain.deadlinePosix && (
+                    <div className="mt-4 rounded-xl border border-violet-500/20 bg-slate-950/65 p-4">
+                      <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-violet-300">
+                        Duel Ended — Claim Result
+                      </p>
+                      {resolveResult?.txHash ? (
+                        <p className="break-all text-xs text-cyan-300">
+                          Resolved!{" "}
+                          <a
+                            href={`https://preprod.cardanoscan.io/transaction/${resolveResult.txHash}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="underline"
+                          >
+                            View on explorer
+                          </a>
+                        </p>
+                      ) : (
+                        <>
+                          {resolveResult?.error && (
+                            <p className="mb-2 text-xs text-red-400">{resolveResult.error}</p>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void handleResolve()}
+                            disabled={resolving}
+                            className="rounded-lg border border-violet-400/60 bg-violet-400/15 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.1em] text-slate-100 disabled:opacity-50"
+                          >
+                            {resolving ? "Resolving…" : "Resolve Duel"}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
 
                 <div className="mt-4 rounded-xl border border-violet-500/20 bg-slate-950/65 p-4 text-xs text-violet-100/80">
                   {game.status === "ready" ? (

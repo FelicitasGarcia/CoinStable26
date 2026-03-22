@@ -160,6 +160,28 @@ export default function JoinGamePage() {
 
         const playerTwoPkh = resolvePaymentKeyHash(address);
         const playerTwoPriceFeedId = await resolveHermesFeedId(selectedRate);
+
+        const feedA = gameData.game.onchain.playerOneFeedId ?? getOnchainFeedId(gameData.game.config.rate);
+        const feedB = getOnchainFeedId(selectedRate);
+
+        // Fetch Pyth Lazer signed prices from the backend (needs server-side PYTH_TOKEN)
+        const lazerRes = await fetch("/api/onchain/pyth-lazer-prices", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ feedIds: [feedA, feedB] }),
+        });
+        const lazerData = (await lazerRes.json()) as {
+          signedUpdateHex?: string;
+          parsedPrices?: Array<{ feedId: number; price: number; exponent: number }>;
+          error?: string;
+        };
+        if (!lazerRes.ok || !lazerData.signedUpdateHex || !lazerData.parsedPrices) {
+          throw new Error(lazerData.error ?? "Could not fetch Pyth Lazer prices");
+        }
+        const priceA = lazerData.parsedPrices.find((p) => p.feedId === feedA);
+        const priceB = lazerData.parsedPrices.find((p) => p.feedId === feedB);
+        if (!priceA || !priceB) throw new Error("Missing price data for one or both feeds");
+
         const provider = new BlockfrostProvider(onchainConfig.blockfrostId);
         const utxos = await wallet.getUtxos();
         const depositResult = await depositB({
@@ -175,11 +197,12 @@ export default function JoinGamePage() {
           backendPkh: onchainConfig.backendPkh,
           pythPolicyId: onchainConfig.pythPolicyId,
           blockfrostId: onchainConfig.blockfrostId,
-          priceFeedIdA: gameData.game.onchain.playerOnePriceFeedId ?? (await resolveHermesFeedId(gameData.game.config.rate)),
-          priceFeedIdB: playerTwoPriceFeedId,
+          signedUpdateHex: lazerData.signedUpdateHex,
+          startPriceA: priceA.price,
+          startPriceB: priceB.price,
           plutus: onchainConfig.plutus,
-          feedA: gameData.game.onchain.playerOneFeedId ?? getOnchainFeedId(gameData.game.config.rate),
-          feedB: getOnchainFeedId(selectedRate),
+          feedA,
+          feedB,
           bet_lovelace: Math.round(gameData.game.config.betAda * 1_000_000),
           duelDuration: DURATION_TO_MS[gameData.game.config.duration],
         });

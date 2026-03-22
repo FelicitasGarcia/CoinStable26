@@ -256,6 +256,25 @@ Because minting is atomic with resolution, a Horseshoe can only ever exist as cr
 | `POST` | `/api/games` | Create a new game session |
 | `GET` | `/api/games/:id` | Fetch current game state |
 | `POST` | `/api/games/:id/join` | Player B joins an existing game |
+| `GET` | `/api/onchain/deposit-a-config` | Returns `blockfrostId`, `backendPkh`, `pythPolicyId`, compiled validators |
+| `POST` | `/api/onchain/deposit-a-submit` | Backend co-signs + submits Player A's partial transaction |
+| `POST` | `/api/onchain/deposit-b-submit` | Backend co-signs + submits Player B's partial transaction |
+| `POST` | `/api/onchain/pyth-lazer-prices` | Fetches a signed Pyth Lazer update (server-side, needs `PYTH_TOKEN`) |
+| `POST` | `/api/onchain/resolve` | Resolves a finished duel: fetches final prices, determines winner, submits resolve TX |
+
+### ⚠️ Frontend–Blockchain Integration Status
+
+> **The on-chain transaction flow is not fully working end-to-end in the browser at submission time.** We ran into Cardano-specific serialization issues with the Pyth Lazer withdrawal redeemer (the signed price update is hundreds of bytes and must be CBOR-chunked in a specific way that differs between MeshJS's internal serializer and what Blockfrost accepts). We spent significant time debugging this but could not fully resolve it within the hackathon window.
+
+**The transaction-building logic is complete and correct** — it can be seen working end-to-end in the standalone Node.js scripts:
+
+| File | Description |
+|------|-------------|
+| `pyth-coin-stable-front/src/depositA.mjs` | Player A creates a duel — mints NFT, locks ADA at script |
+| `pyth-coin-stable-front/src/depositB.mjs` | Player B joins — fetches Pyth Lazer prices, verifies on-chain via zero-withdrawal, transitions datum to Active |
+| `pyth-coin-stable-front/src/resolve.mjs` | Backend resolves — fetches final prices, determines winner, burns NFT, pays out pot + mints horseshoe token |
+
+These scripts use the exact same MeshJS transaction builder, Pyth Lazer SDK, and Aiken validators as the frontend, and can be run directly with `node` against Cardano preprod. The UI, game state machine, wallet connection, and smart contracts are all fully functional — only the final browser-to-Blockfrost submission step for `depositB` has the remaining integration issue.
 
 ---
 
