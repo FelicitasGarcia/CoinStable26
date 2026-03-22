@@ -26,12 +26,10 @@ import {
   MeshWallet,
   MeshTxBuilder,
   resolveScriptHash,
-  // serializePlutusScript,
   applyParamsToScript,
-  // mConStr0,
+  mConStr0,
   mConStr1,
   resolveSlotNo,
-  ForgeScript,
 } from "@meshsdk/core";
 import { bech32 } from "bech32";
 import dotenv from "dotenv";
@@ -99,8 +97,9 @@ const cborBytesParam = (hex) => {
 const plutus = JSON.parse(readFileSync(
   new URL("../../pyth-coin-stable-validators/plutus.json", import.meta.url), "utf8"
 ));
-const NFT_COMPILED_CODE = plutus.validators.find((v) => v.title === "nft.nft_policy.mint").compiledCode;
-const BET_COMPILED_CODE = plutus.validators.find((v) => v.title === "validators.bet.spend").compiledCode;
+const NFT_COMPILED_CODE    = plutus.validators.find((v) => v.title === "nft.nft_policy.mint").compiledCode;
+const BET_COMPILED_CODE    = plutus.validators.find((v) => v.title === "validators.bet.spend").compiledCode;
+const WINNER_COMPILED_CODE = plutus.validators.find((v) => v.title === "winner_token.winner_token.mint").compiledCode;
 
 const mintScriptCbor = applyParamsToScript(NFT_COMPILED_CODE, [cborBytesParam(BACKEND_PKH)], "CBOR");
 const mintPolicyId   = resolveScriptHash(mintScriptCbor, "V3");
@@ -111,10 +110,12 @@ const spendScriptCbor = applyParamsToScript(BET_COMPILED_CODE, [
   cborBytesParam(PYTH_POLICY_ID),
 ], "CBOR");
 
-// Winner trophy token — ForgeScript locked to backend address
-// Policy ID is derived later once we have the wallet address.
+const winnerScriptCbor = applyParamsToScript(WINNER_COMPILED_CODE, [cborBytesParam(BACKEND_PKH)], "CBOR");
+const winnerPolicyId   = resolveScriptHash(winnerScriptCbor, "V3");
+const WINNER_TOKEN_NAME = "686f727365736f6f65"; // "horseshoe" UTF-8
 
-console.log("Mint policy ID:  ", mintPolicyId);
+console.log("Mint policy ID:   ", mintPolicyId);
+console.log("Winner policy ID: ", winnerPolicyId);
 console.log();
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -257,10 +258,6 @@ async function main() {
     process.exit(0);
   }
 
-  // Winner trophy token — ForgeScript locked to backend wallet address
-  const forgingScript = ForgeScript.withOneSignature(address);
-  const winnerPolicyId = resolveScriptHash(forgingScript);
-  const WINNER_TOKEN_NAME = Buffer.from("DuelWinner", "utf-8").toString("hex");
   console.log(`  Winner policy ID: ${winnerPolicyId}\n`);
 
   // 4. Build transaction
@@ -327,10 +324,12 @@ async function main() {
   } else {
     const winnerPkh = changeA > changeB ? PLAYER_A_PKH : PLAYER_B_PKH;
 
-    // Mint 1 winner trophy token (ForgeScript, backend signature)
+    // Mint 1 winner trophy token (winner_token Plutus validator)
     tx
+      .mintPlutusScriptV3()
       .mint("1", winnerPolicyId, WINNER_TOKEN_NAME)
-      .mintingScript(forgingScript);
+      .mintingScript(winnerScriptCbor)
+      .mintRedeemerValue(mConStr0([]), "Mesh", { mem: 500_000, steps: 500_000_000 });
 
     tx.txOut(pkhToAddress(winnerPkh), [
       { unit: "lovelace", quantity: String(totalPot) },
