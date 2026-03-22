@@ -67,6 +67,7 @@ export default function CreateGamePage() {
 
       const provider = new BlockfrostProvider(onchainConfig.blockfrostId);
       const utxos = await wallet.getUtxos();
+      console.log(utxos);
       const depositResult = await depositA({
         provider,
         wallet,
@@ -77,13 +78,24 @@ export default function CreateGamePage() {
         plutus: onchainConfig.plutus,
         bet_lovelace: lovelace,
       });
-      console.log(depositResult);
-      const txUrl = `https://preprod.cardanoscan.io/transaction/${depositResult.txHash}`;
-      
-      console.log(`[create-game] depositA tx: ${depositResult.txHash}`);
-      console.log(`[create-game] explorer: ${txUrl}`);
+      console.log("[create-game] partial tx built, sending to backend to co-sign...");
 
-      await router.push(`/game/${data.game.id}`);
+      // Backend co-signs (NFT mint requires backend_pkh) and submits
+      const submitRes = await fetch("/api/onchain/deposit-a-submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ partiallySignedTx: depositResult.partiallySignedTx }),
+      });
+      const submitData = (await submitRes.json()) as { txHash?: string; error?: string };
+      if (!submitRes.ok || !submitData.txHash) {
+        throw new Error(submitData.error ?? "Backend failed to submit transaction");
+      }
+
+      const txHash = submitData.txHash;
+      console.log(`[create-game] depositA tx: ${txHash}`);
+      console.log(`[create-game] explorer: https://preprod.cardanoscan.io/transaction/${txHash}`);
+
+      await router.push(`/game/${data.game.id}?txHash=${txHash}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not create game";
       setError(message);

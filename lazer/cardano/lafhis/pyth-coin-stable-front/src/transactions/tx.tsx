@@ -54,7 +54,7 @@ export type DepositAParams = {
 };
 
 export type DepositAResult = {
-  txHash: string;
+  partiallySignedTx: string; // user-signed CBOR, backend still needs to co-sign
   duelId: string;
   scriptAddress: string;
   spendScriptHash: string;
@@ -239,6 +239,7 @@ export async function depositA({
   tx = tx.mint("1", mintPolicyId, duelId);
   tx = tx.mintingScript(mintScriptCbor);
   tx = tx.mintRedeemerValue(mintRedeemer);
+  tx = tx.requiredSignerHash(sanitizedBackendPkh); // backend must co-sign for the NFT mint policy
   tx = tx.txOut(scriptAddress, [
     { unit: "lovelace", quantity: String(finalBetLovelace) },
     { unit: mintPolicyId + duelId, quantity: "1" },
@@ -247,12 +248,15 @@ export async function depositA({
   tx = tx.changeAddress(sanitizedAddress);
   tx = tx.selectUtxosFrom(utxos as never);
 
+  console.log("[depositA] building tx...");
   const unsigned = await tx.complete();
-  const signed = await wallet.signTx(unsigned);
-  const txHash = await wallet.submitTx(signed);
+  console.log("[depositA] tx built, requesting wallet signature (partial)...");
+  // partialSign=true: user signs their inputs; backend still needs to co-sign for the NFT mint
+  const partiallySignedTx = await wallet.signTx(unsigned, true);
+  console.log("[depositA] wallet signed OK, returning to frontend for backend co-sign...");
 
   return {
-    txHash,
+    partiallySignedTx,
     duelId,
     scriptAddress,
     spendScriptHash,
