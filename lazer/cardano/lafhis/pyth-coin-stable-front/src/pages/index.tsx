@@ -1,5 +1,6 @@
 import Head from "next/head";
 import Image from "next/image";
+import { CardanoWallet, useWallet } from "@meshsdk/react";
 
 const steps = [
   {
@@ -21,6 +22,8 @@ const steps = [
 ];
 
 export default function Home() {
+  const { connected } = useWallet();
+
   return (
     <>
       <Head>
@@ -113,13 +116,14 @@ export default function Home() {
                 <p className="mb-4 text-xs text-amber-100/80">
                   Conecta wallet para crear duelo o aceptar challenge link.
                 </p>
-                <div className="rounded-xl border border-amber-200/25 bg-stone-950/70 p-3 text-xs text-amber-100/85">
-                  Wallet UI desactivada temporalmente para evitar el error de libsodium en
-                  navegador.
+                <div className="mb-4">
+                  <CardanoWallet />
                 </div>
-                <div className="mt-4 rounded-xl border border-amber-200/25 bg-stone-950/70 p-3 text-xs text-amber-100/85">
-                  Apuesta predefinida: <strong>10 / 25 / 50 ADA</strong>
-                </div>
+                {connected && (
+                  <div className="rounded-xl border border-amber-200/25 bg-stone-950/70 p-3 text-xs text-amber-100/85">
+                    Apuesta predefinida: <strong>10 / 25 / 50 ADA</strong>
+                  </div>
+                )}
               </div>
             </div>
           </div>
