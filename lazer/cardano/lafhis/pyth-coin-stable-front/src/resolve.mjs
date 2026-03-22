@@ -1,13 +1,14 @@
 /**
- * depositB.mjs
+ * resolve.mjs
  *
- * Step 2 of the Duelo de Traders flow: Player B joins a waiting duel.
+ * Step 3 of the Duelo de Traders flow: Backend resolves the duel post-deadline.
  *
  * This transaction:
- *   1. Fetches verified Pyth prices (ADA/USD and BTC/USD)
+ *   1. Fetches verified Pyth final prices (ADA/USD and BTC/USD)
  *   2. Performs a zero-ADA withdrawal from the Pyth script to verify prices on-chain
- *   3. Spends the DepositA UTxO (Waiting datum) from the bet validator
- *   4. Produces a new UTxO at the bet script with an Active datum, recording start prices
+ *   3. Spends the Active UTxO from the bet validator
+ *   4. Burns the authenticity NFT
+ *   5. Pays the winner the full pot (or refunds both players on draw)
  *
  * Required .env vars:
  *   PYTH_TOKEN         – Pyth Lazer API token
@@ -15,11 +16,8 @@
  *   PYTH_POLICY_ID     – PolicyId of the Pyth on-chain state NFT
  *   BACKEND_PKH        – Payment key hash of the backend wallet
  *   MNEMONIC           – Space-separated wallet mnemonic
- *   DEPOSIT_A_TX_HASH  – TxHash of the DepositA UTxO to spend
- *   DEPOSIT_A_TX_INDEX – Output index of the DepositA UTxO (default: 0)
- *   DUEL_ID            – The duel ID hex (from depositA output)
- *   PLAYER_A_PKH       – Payment key hash of Player A
- *   PLAYER_B_PKH       – Payment key hash of Player B (the joiner)
+ *
+ * State is read from duel-state.json (written by depositB).
  */
 
 import { PythLazerClient } from "@pythnetwork/pyth-lazer-sdk";
@@ -28,15 +26,16 @@ import {
   MeshWallet,
   MeshTxBuilder,
   resolveScriptHash,
-  serializePlutusScript,
+  // serializePlutusScript,
   applyParamsToScript,
-  mConStr0,
+  // mConStr0,
   mConStr1,
   resolveSlotNo,
+  ForgeScript,
 } from "@meshsdk/core";
 import { bech32 } from "bech32";
 import dotenv from "dotenv";
-import { readFileSync, writeFileSync } from "fs";
+import { readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 dotenv.config();
@@ -59,26 +58,32 @@ const BLOCKFROST_ID  = required("BLOCKFROST_ID");
 const PYTH_POLICY_ID = required("PYTH_POLICY_ID");
 const BACKEND_PKH    = required("BACKEND_PKH");
 const MNEMONIC       = required("MNEMONIC").split(" ");
-// const PLAYER_B_PKH   = required("PLAYER_B_PKH");
-const playerB_pkh = "bb".repeat(28); // TODO: parameter. same as in depositA
 
-// State persisted by depositA
+// State persisted by depositB
 let duelState;
 try {
   duelState = JSON.parse(readFileSync(DUEL_STATE_FILE, "utf8"));
 } catch {
-  console.error("duel-state.json not found — run depositA first.");
+  console.error("duel-state.json not found — run depositA and depositB first.");
   process.exit(1);
 }
-const DEPOSIT_A_TX_HASH  = duelState.txHash;
-const DEPOSIT_A_TX_INDEX = duelState.txIndex ?? 0;
-const DUEL_ID            = duelState.duelId;
-const PLAYER_A_PKH       = duelState.playerA_pkh;
 
-const FEED_A = 16;  // ADA/USD. TODO: parameter.
-const FEED_B = 29;  // BTC/USD TODO: parameter
-const BET_LOVELACE = 5_000_000; // 5 ADA. TODO: parameter
-const DUEL_DURATION_MS = 30_000; // 30 seconds for testing. TODO: change.
+if (!duelState.depositB_txHash) {
+  console.error("depositB_txHash not found in duel-state.json — run depositB first.");
+  process.exit(1);
+}
+
+const ACTIVE_TX_HASH  = duelState.depositB_txHash;
+const ACTIVE_TX_INDEX = duelState.depositB_txIndex ?? 0;
+const DUEL_ID         = duelState.duelId;
+const PLAYER_A_PKH    = duelState.playerA_pkh;
+const DEADLINE        = duelState.deadline;
+const BET_LOVELACE    = duelState.betLovelace;
+// For testing, player B is hardcoded. In prod, read from duel-state.
+const PLAYER_B_PKH    = "bb".repeat(28);
+
+const FEED_A = 16;  // ADA/USD
+const FEED_B = 29;  // BTC/USD
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SCRIPT SETUP
@@ -97,25 +102,23 @@ const plutus = JSON.parse(readFileSync(
 const NFT_COMPILED_CODE = plutus.validators.find((v) => v.title === "nft.nft_policy.mint").compiledCode;
 const BET_COMPILED_CODE = plutus.validators.find((v) => v.title === "validators.bet.spend").compiledCode;
 
-const mintScriptCbor  = applyParamsToScript(NFT_COMPILED_CODE, [cborBytesParam(BACKEND_PKH)], "CBOR");
-const mintPolicyId    = resolveScriptHash(mintScriptCbor, "V3");
+const mintScriptCbor = applyParamsToScript(NFT_COMPILED_CODE, [cborBytesParam(BACKEND_PKH)], "CBOR");
+const mintPolicyId   = resolveScriptHash(mintScriptCbor, "V3");
 
 const spendScriptCbor = applyParamsToScript(BET_COMPILED_CODE, [
   cborBytesParam(BACKEND_PKH),
   cborBytesParam(mintPolicyId),
   cborBytesParam(PYTH_POLICY_ID),
 ], "CBOR");
-const scriptAddress = serializePlutusScript(
-  { code: spendScriptCbor, version: "V3" },
-  undefined, 0, false,
-).address;
+
+// Winner trophy token — ForgeScript locked to backend address
+// Policy ID is derived later once we have the wallet address.
 
 console.log("Mint policy ID:  ", mintPolicyId);
-console.log("Script address:  ", scriptAddress);
 console.log();
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PYTH HELPERS
+// HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
 const PYTH_STATE_ASSET_NAME = Buffer.from("Pyth State", "utf-8").toString("hex");
@@ -124,6 +127,11 @@ function scriptHashToRewardAddress(hash, networkId = 0) {
   const header = networkId === 0 ? 0xf0 : 0xf1;
   const bytes = Buffer.concat([Buffer.from([header]), Buffer.from(hash, "hex")]);
   return bech32.encode(networkId === 0 ? "stake_test" : "stake", bech32.toWords(bytes), 200);
+}
+
+function pkhToAddress(pkh) {
+  const bytes = Buffer.concat([Buffer.from([0x60]), Buffer.from(pkh, "hex")]);
+  return bech32.encode("addr_test", bech32.toWords(bytes), 200);
 }
 
 async function resolvePythState() {
@@ -183,31 +191,20 @@ async function fetchSignedPrices(feedIds) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PLUTUS DATA HELPERS
-// ═══════════════════════════════════════════════════════════════════════════
-
-const someD = (inner) => mConStr0([inner]);
-const noneD = () => mConStr1([]);
-
-const playerD = ({ pkh, feedId, startPrice }) =>
-  mConStr0([pkh, feedId, startPrice != null ? someD(startPrice) : noneD()]);
-
-const duelDatumD = ({ duelId, playerA, playerB, betLovelace, statusIdx, deadline }) =>
-  mConStr0([
-    duelId,
-    playerD(playerA),
-    playerB ? someD(playerD(playerB)) : noneD(),
-    betLovelace,
-    statusIdx === 0 ? mConStr0([]) : mConStr1([]),
-    deadline != null ? someD(deadline) : noneD(),
-  ]);
-
-// ═══════════════════════════════════════════════════════════════════════════
 // MAIN
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function main() {
-  console.log("═══ DepositB (Join) ═══\n");
+  console.log("═══ Resolve ═══\n");
+
+  // Check deadline
+  const now = Date.now();
+  if (now < DEADLINE) {
+    const remaining = Math.ceil((DEADLINE - now) / 1000);
+    console.log(`  Deadline not reached yet. ${remaining}s remaining.`);
+    console.log(`  Deadline: ${new Date(DEADLINE).toISOString()}`);
+    process.exit(0);
+  }
 
   // 1. Resolve Pyth state
   console.log("  Resolving Pyth state...");
@@ -215,45 +212,33 @@ async function main() {
   const pythRewardAddr = scriptHashToRewardAddress(pythState.withdrawScriptHash, 0);
   console.log(`  Pyth state: ${pythState.txHash}#${pythState.txIndex}`);
 
-  // 2. Fetch starting prices
-  console.log("  Fetching starting prices...");
+  // 2. Fetch final prices
+  console.log("  Fetching final prices...");
   const { signedUpdate, parsedPrices } = await fetchSignedPrices([FEED_A, FEED_B]);
 
-  const priceA = parsedPrices.find((p) => p.feedId === FEED_A);
-  const priceB = parsedPrices.find((p) => p.feedId === FEED_B);
+  const finalA = parsedPrices.find((p) => p.feedId === FEED_A);
+  const finalB = parsedPrices.find((p) => p.feedId === FEED_B);
+  const endA = finalA.price;
+  const endB = finalB.price;
 
-  // Store raw price integer — matches what get_price_from_pyth returns on-chain
-  const scaledA = priceA.price;
-  const scaledB = priceB.price;
-  console.log(`  ADA/USD: ${priceA.price} (exp=${priceA.exponent})`);
-  console.log(`  BTC/USD: ${priceB.price} (exp=${priceB.exponent})`);
+  // Read start prices from duel-state (set during depositB)
+  const startA = duelState.startPriceA;
+  const startB = duelState.startPriceB;
 
-  const deadlinePosix = Date.now() + DUEL_DURATION_MS;
-  const totalPot = BET_LOVELACE * 2;
+  console.log(`  ADA/USD: start=${startA} → end=${endA}`);
+  console.log(`  BTC/USD: start=${startB} → end=${endB}`);
 
-  // 3. Build new Active datum
-  const newDatum = duelDatumD({
-    duelId:      DUEL_ID,
-    playerA:     { pkh: PLAYER_A_PKH, feedId: FEED_A, startPrice: scaledA },
-    playerB:     { pkh: playerB_pkh, feedId: FEED_B, startPrice: scaledB },
-    betLovelace: BET_LOVELACE,
-    statusIdx:   1, // Active
-    deadline:    deadlinePosix,
-  });
+  // Determine winner (same formula as validator)
+  const changeA = Math.trunc(((endA - startA) * 1_000_000) / startA);
+  const changeB = Math.trunc(((endB - startB) * 1_000_000) / startB);
+  const isDraw = Math.abs(changeA - changeB) < 100;
 
-  console.log("\n  New datum (Active):");
-  console.log(`    duel_id:     ${DUEL_ID}`);
-  console.log(`    player_a:    pkh=${PLAYER_A_PKH}  feed_id=${FEED_A}  start_price=${scaledA}`);
-  console.log(`    player_b:    pkh=${playerB_pkh}  feed_id=${FEED_B}  start_price=${scaledB}`);
-  console.log(`    bet_lovelace:${BET_LOVELACE}`);
-  console.log(`    status:      Active (1)`);
-  console.log(`    deadline:    ${new Date(deadlinePosix).toISOString()}`);
+  console.log(`  Change A: ${changeA} (${(changeA / 10_000).toFixed(2)}%)`);
+  console.log(`  Change B: ${changeB} (${(changeB / 10_000).toFixed(2)}%)`);
+  console.log(`  Result: ${isDraw ? "DRAW" : "WINNER = " + (changeA > changeB ? "Player A" : "Player B")}`);
   console.log();
 
-  // Join redeemer: Join { player_pkh, feed_id }
-  const joinRedeemer = mConStr0([playerB_pkh, FEED_B]);
-
-  // 4. Setup wallet
+  // 3. Setup wallet
   const provider = new BlockfrostProvider(BLOCKFROST_ID);
   const wallet = new MeshWallet({
     networkId: 0,
@@ -272,8 +257,42 @@ async function main() {
     process.exit(0);
   }
 
-  // 5. Build transaction
+  // Winner trophy token — ForgeScript locked to backend wallet address
+  const forgingScript = ForgeScript.withOneSignature(address);
+  const winnerPolicyId = resolveScriptHash(forgingScript);
+  const WINNER_TOKEN_NAME = Buffer.from("DuelWinner", "utf-8").toString("hex");
+  console.log(`  Winner policy ID: ${winnerPolicyId}\n`);
+
+  // 4. Build transaction
+  const totalPot = BET_LOVELACE * 2;
+
+  // Encode Resolve { timestamp } as CBOR hex manually.
+  // mConStr1([largeInt]) has a known MeshJS serialisation issue with big integers.
+  // Constr 1 [I n]  =>  d87a 81 <cbor-uint>
+  function cborConstr1Int(n) {
+    const buf = [0xd8, 0x7a, 0x81]; // tag(122) array(1)
+    const big = BigInt(n);
+    if (big <= 0x17n)       { buf.push(Number(big)); }
+    else if (big <= 0xffn)  { buf.push(0x18, Number(big)); }
+    else if (big <= 0xffffn){ buf.push(0x19, Number(big >> 8n), Number(big & 0xffn)); }
+    else if (big <= 0xffffffffn) {
+      buf.push(0x1a,
+        Number((big >> 24n) & 0xffn), Number((big >> 16n) & 0xffn),
+        Number((big >> 8n)  & 0xffn), Number(big & 0xffn));
+    } else {
+      buf.push(0x1b,
+        Number((big >> 56n) & 0xffn), Number((big >> 48n) & 0xffn),
+        Number((big >> 40n) & 0xffn), Number((big >> 32n) & 0xffn),
+        Number((big >> 24n) & 0xffn), Number((big >> 16n) & 0xffn),
+        Number((big >> 8n)  & 0xffn), Number(big & 0xffn));
+    }
+    return Buffer.from(buf).toString("hex");
+  }
+
+  const resolveRedeemerCbor = cborConstr1Int(DEADLINE);
+  const burnRedeemer = mConStr1([]);  // Burn redeemer for nft_policy — empty, no issue
   const nowSlot = resolveSlotNo("preprod", Date.now());
+
   const tx = new MeshTxBuilder({ fetcher: provider, submitter: provider });
 
   tx
@@ -286,22 +305,40 @@ async function main() {
     .withdrawalPlutusScriptV3()
     .withdrawal(pythRewardAddr, "0")
     .withdrawalTxInReference(pythState.txHash, pythState.txIndex, pythState.scriptSize, pythState.withdrawScriptHash)
-    .withdrawalRedeemerValue([signedUpdate.toString("hex")])
+    .withdrawalRedeemerValue([signedUpdate.toString("hex")], "Mesh", { mem: 10_000_000, steps: 6_000_000_000 })
 
-    // Spend the DepositA UTxO
+    // Spend Active UTxO
     .spendingPlutusScriptV3()
-    .txIn(DEPOSIT_A_TX_HASH, DEPOSIT_A_TX_INDEX)
+    .txIn(ACTIVE_TX_HASH, ACTIVE_TX_INDEX)
     .txInInlineDatumPresent()
-    .txInRedeemerValue(joinRedeemer)
+    .txInRedeemerValue(resolveRedeemerCbor, "CBOR", { mem: 5_000_000, steps: 2_000_000_000 })
     .txInScript(spendScriptCbor)
 
-    // Output: 2× bet + NFT → script with Active datum
-    .txOut(scriptAddress, [
-      { unit: "lovelace", quantity: String(totalPot) },
-      { unit: mintPolicyId + DUEL_ID, quantity: "1" },
-    ])
-    .txOutInlineDatumValue(newDatum)
+    // Burn the authenticity NFT
+    .mintPlutusScriptV3()
+    .mint("-1", mintPolicyId, DUEL_ID)
+    .mintingScript(mintScriptCbor)
+    .mintRedeemerValue(burnRedeemer, "Mesh", { mem: 1_000_000, steps: 1_000_000_000 });
 
+  if (isDraw) {
+    tx
+      .txOut(pkhToAddress(PLAYER_A_PKH), [{ unit: "lovelace", quantity: String(BET_LOVELACE) }])
+      .txOut(pkhToAddress(PLAYER_B_PKH), [{ unit: "lovelace", quantity: String(BET_LOVELACE) }]);
+  } else {
+    const winnerPkh = changeA > changeB ? PLAYER_A_PKH : PLAYER_B_PKH;
+
+    // Mint 1 winner trophy token (ForgeScript, backend signature)
+    tx
+      .mint("1", winnerPolicyId, WINNER_TOKEN_NAME)
+      .mintingScript(forgingScript);
+
+    tx.txOut(pkhToAddress(winnerPkh), [
+      { unit: "lovelace", quantity: String(totalPot) },
+      { unit: winnerPolicyId + WINNER_TOKEN_NAME, quantity: "1" },
+    ]);
+  }
+
+  tx
     .changeAddress(address)
     .selectUtxosFrom(utxos);
 
@@ -310,13 +347,8 @@ async function main() {
   const signed = await wallet.signTx(unsigned);
   const txHash = await wallet.submitTx(signed);
 
-  const updatedState = { ...duelState, depositB_txHash: txHash, depositB_txIndex: 0, deadline: deadlinePosix, startPriceA: scaledA, startPriceB: scaledB };
-  writeFileSync(DUEL_STATE_FILE, JSON.stringify(updatedState, null, 2));
-
   console.log("\n  TX submitted:", txHash);
   console.log("  https://preprod.cardanoscan.io/transaction/" + txHash);
-  console.log(`  Deadline: ${new Date(deadlinePosix).toISOString()}`);
-  console.log("  Duel state saved to duel-state.json");
 }
 
 main().catch((err) => {
