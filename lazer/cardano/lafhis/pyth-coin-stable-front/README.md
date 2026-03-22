@@ -1,37 +1,59 @@
-# Starter Next.js TypeScript
+# pyth-coin-stable-front
 
-Start a new project on Next.js. This starter template consists of a connect wallet button and wallet integration.
-      
-## Getting Started
+Frontend en Next.js para crear/unirse a partidas y visualizar la UI del duelo.
 
-Start project locally using CLI:
+## Requisitos
 
-```bash
-npx meshjs app-name
+- Node.js 18+
+- npm
+
+## Variables de entorno
+
+### Para correr el front (`npm run dev`)
+
+Si vas a usar el flujo de crear partida con depósito on-chain (`depositA`), necesitás:
+
+```env
+BLOCKFROST_ID=...
+PYTH_POLICY_ID=...
+BACKEND_PKH=...
 ```
 
-## Learn More
+Además, el backend de Next lee `../pyth-coin-stable-validators/plutus.json`.
 
-### [APIs](https://meshjs.dev/apis)
+### Para interactuar con el validador
 
-From wallet integrations to transaction builders, Mesh makes Web3 development easy with reliable, scalable, and well-engineered APIs & developer tools.
+Para poder ejecutar el juego se necesitan las siguientes variables de entorno:
 
-### [Guides](https://meshjs.dev/guides)
+```env
+BLOCKFROST_ID=...
+PYTH_POLICY_ID=...
+BACKEND_PKH=...
+MNEMONIC="word1 word2 word3 ..."
+PYTH_TOKEN=...
+```
 
-Whether you are new to web development or a seasoned blockchain full-stack developer, these guides will help you get started.
+Notas:
+- `PYTH_TOKEN` es obligatorio para `src/testFlow.mjs`.
+- `src/depositA.mjs` no usa `PYTH_TOKEN`, pero puede coexistir en el mismo `.env`.
 
-### [Smart Contracts](https://meshjs.dev/smart-contracts)
+## Instalación
 
-Open-source smart contracts, complete with documentation, live demos, and end-to-end source code.
+```bash
+npm install
+```
 
-### [React components and hooks](https://meshjs.dev/react)
+## Ejecutar en desarrollo
 
-Frontend components for wallet connections, and useful React hooks to getting wallet states - Mesh provides everything you need to bring your Web3 user interface to life.
+```bash
+npm run dev
+```
 
-## Connect with us
+Abrir en navegador: `http://localhost:3000`
 
-Give a star on our [GitHub](https://meshjs.dev/go/github) to stay up to date with our latest developments.
+## Build de producción
 
-Follow us on [Twitter](https://meshjs.dev/go/twitter) for updates.
-
-Join our [Discord](https://meshjs.dev/go/discord) for any questions and suggestions.
+```bash
+npm run build
+npm run start
+```
