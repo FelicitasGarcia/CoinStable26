@@ -2,6 +2,62 @@ import { HermesClient } from "@pythnetwork/hermes-client";
 import { useEffect, useRef, useState } from "react";
 import type { GameDuration } from "@/types/game";
 
+// ─── Confetti ────────────────────────────────────────────────────────────────
+
+const CONFETTI_COLORS = [
+  "#a78bfa", "#818cf8", "#34d399", "#f472b6",
+  "#fbbf24", "#60a5fa", "#f87171", "#c084fc",
+];
+
+type Particle = {
+  id: number; x: number; delay: number; duration: number;
+  color: string; size: number; drift: number; shape: "rect" | "circle";
+};
+
+function makeParticles(n: number): Particle[] {
+  return Array.from({ length: n }, (_, i) => ({
+    id: i,
+    x: Math.random() * 100,
+    delay: Math.random() * 1.2,
+    duration: 2.2 + Math.random() * 1.6,
+    color: CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)]!,
+    size: 5 + Math.random() * 6,
+    drift: (Math.random() - 0.5) * 60,
+    shape: Math.random() > 0.5 ? "rect" : "circle",
+  }));
+}
+
+function Confetti() {
+  const [particles] = useState(() => makeParticles(60));
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl" aria-hidden>
+      {particles.map((p) => (
+        <div
+          key={p.id}
+          className="absolute top-0"
+          style={{
+            left: `${p.x}%`,
+            width: p.size,
+            height: p.shape === "circle" ? p.size : p.size * 1.6,
+            borderRadius: p.shape === "circle" ? "50%" : "2px",
+            backgroundColor: p.color,
+            opacity: 0,
+            animation: `confetti-fall ${p.duration}s ${p.delay}s ease-in forwards`,
+            ["--drift" as string]: `${p.drift}px`,
+          }}
+        />
+      ))}
+      <style>{`
+        @keyframes confetti-fall {
+          0%   { transform: translateY(-10px) translateX(0) rotate(0deg);   opacity: 1; }
+          80%  { opacity: 1; }
+          100% { transform: translateY(320px) translateX(var(--drift)) rotate(540deg); opacity: 0; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
 type RaceState = "idle" | "running" | "finished";
 
 const DURATION_SECONDS: Record<GameDuration, number> = {
@@ -61,12 +117,29 @@ function Lane({
   const pctColor = negative ? "text-red-400" : "text-emerald-400";
 
   return (
-    <div className={`rounded-xl border ${border} ${winner ? "ring-1 ring-emerald-400/50" : ""} bg-slate-950/50 p-3 transition-all duration-300`}>
+    <div className="relative">
+      {winner && (
+        <>
+          <img
+            src="/img/horseshoe.png"
+            alt="trophy"
+            className="pointer-events-none absolute -top-10 left-1/2 z-10 h-10 w-10 -translate-x-1/2 object-contain drop-shadow-[0_0_8px_rgba(251,191,36,0.8)]"
+            style={{ animation: "trophy-float 1.8s ease-in-out infinite" }}
+          />
+          <style>{`
+            @keyframes trophy-float {
+              0%, 100% { transform: translateX(-50%) translateY(0px);   }
+              50%       { transform: translateX(-50%) translateY(-6px);  }
+            }
+          `}</style>
+        </>
+      )}
+    <div className={`rounded-xl border ${border} ${winner ? "ring-2 ring-yellow-400/60 shadow-[0_0_14px_rgba(251,191,36,0.25)]" : ""} bg-slate-950/50 p-3 transition-all duration-300`}>
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className={`text-[11px] font-bold ${text}`}>{sym}</span>
         <div className="flex items-center gap-1.5">
           {winner && (
-            <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-emerald-400">winner</span>
+            <span className="rounded-full bg-yellow-500/20 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-yellow-300">🏆 winner</span>
           )}
           {leading && !winner && (
             <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-emerald-400">leading</span>
@@ -96,6 +169,7 @@ function Lane({
           </div>
         </>
       )}
+    </div>
     </div>
   );
 }
@@ -226,7 +300,8 @@ export default function DuelPreview({
   const isDemo = !autoStart;
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="relative flex flex-col gap-3">
+      {raceState === "finished" && <Confetti />}
       <div className="flex items-center justify-between">
         <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-violet-100/40">
           {isDemo ? "Demo Duel" : "Live Race"}
@@ -241,15 +316,17 @@ export default function DuelPreview({
         </span>
       </div>
 
-      <Lane sym={symA} color="violet" currentPrice={currentPrices[symA] ?? null}
-        pctChange={pctA} scaleMax={scaleMax}
-        leading={raceState === "running" && aLeading}
-        winner={winner === symA} raceState={raceState} />
+      <div className={`flex flex-col gap-3 ${winner ? "pt-8" : ""} transition-all duration-500`}>
+        <Lane sym={symA} color="violet" currentPrice={currentPrices[symA] ?? null}
+          pctChange={pctA} scaleMax={scaleMax}
+          leading={raceState === "running" && aLeading}
+          winner={winner === symA} raceState={raceState} />
 
-      <Lane sym={symB} color="cyan" currentPrice={currentPrices[symB] ?? null}
-        pctChange={pctB} scaleMax={scaleMax}
-        leading={raceState === "running" && !aLeading && pctB !== null}
-        winner={winner === symB} raceState={raceState} />
+        <Lane sym={symB} color="cyan" currentPrice={currentPrices[symB] ?? null}
+          pctChange={pctB} scaleMax={scaleMax}
+          leading={raceState === "running" && !aLeading && pctB !== null}
+          winner={winner === symB} raceState={raceState} />
+      </div>
 
       <div className="flex items-center justify-between rounded-xl border border-slate-700/40 bg-slate-950/50 px-3 py-2.5">
         <div className="flex items-center gap-1.5">

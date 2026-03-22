@@ -262,19 +262,62 @@ Because minting is atomic with resolution, a Horseshoe can only ever exist as cr
 | `POST` | `/api/onchain/pyth-lazer-prices` | Fetches a signed Pyth Lazer update (server-side, needs `PYTH_TOKEN`) |
 | `POST` | `/api/onchain/resolve` | Resolves a finished duel: fetches final prices, determines winner, submits resolve TX |
 
-### ⚠️ Frontend–Blockchain Integration Status
+### ⚠️ Known Limitation: Player B Join Transaction
 
-> **The on-chain transaction flow is not fully working end-to-end in the browser at submission time.** We ran into Cardano-specific serialization issues with the Pyth Lazer withdrawal redeemer (the signed price update is hundreds of bytes and must be CBOR-chunked in a specific way that differs between MeshJS's internal serializer and what Blockfrost accepts). We spent significant time debugging this but could not fully resolve it within the hackathon window.
+Everything in the project works end-to-end **except one step**: the browser transaction for Player B joining a duel (`depositB`) is not completing successfully on-chain. Player A creating a game works, the smart contracts are deployed and validated, the UI is fully functional, and the race visualization runs live on the game lobby screen — including a demo preview while waiting for the opponent.
 
-**The transaction-building logic is complete and correct** — it can be seen working end-to-end in the standalone Node.js scripts:
+The issue is a subtle Cardano-specific quirk: the Pyth Lazer signed price update is a large binary payload that must be included in the transaction as a Plutus withdrawal redeemer, and Cardano enforces a strict 64-byte CBOR chunking rule that MeshJS's browser serializer and Blockfrost's submission endpoint handle differently. We spent significant time tracking this down during the hackathon but could not close it within the time window.
+
+**The complete transaction-building logic exists and is correct** — you can see the full flow working in the standalone Node.js scripts:
 
 | File | Description |
 |------|-------------|
-| `pyth-coin-stable-front/src/depositA.mjs` | Player A creates a duel — mints NFT, locks ADA at script |
+| `pyth-coin-stable-front/src/depositA.mjs` | Player A creates a duel — mints authenticity NFT, locks ADA at script |
 | `pyth-coin-stable-front/src/depositB.mjs` | Player B joins — fetches Pyth Lazer prices, verifies on-chain via zero-withdrawal, transitions datum to Active |
 | `pyth-coin-stable-front/src/resolve.mjs` | Backend resolves — fetches final prices, determines winner, burns NFT, pays out pot + mints horseshoe token |
 
-These scripts use the exact same MeshJS transaction builder, Pyth Lazer SDK, and Aiken validators as the frontend, and can be run directly with `node` against Cardano preprod. The UI, game state machine, wallet connection, and smart contracts are all fully functional — only the final browser-to-Blockfrost submission step for `depositB` has the remaining integration issue.
+These scripts use the exact same MeshJS transaction builder, Pyth Lazer SDK, and Aiken validators as the frontend, and can be run directly with `node` against Cardano preprod. They prove that the architecture, the smart contracts, and the Pyth integration are all sound.
+
+In the meantime, the game lobby already shows a **live race preview** — with real-time price bars, a countdown, and asset performance — so you can experience the full look and feel of a duel even before Player B has joined.
+
+### 🧪 Reviewer Demo — Step by Step
+
+Follow these steps to experience the project end-to-end:
+
+**Prerequisites**
+- A Chromium-based browser (Chrome, Brave, Arc)
+- [Eternl](https://eternl.io) or [Nami](https://namiwallet.io) wallet extension installed and set to **Preprod** testnet
+- Some test ADA in your preprod wallet (get it free at [docs.cardano.org/cardano-testnets/tools/faucet](https://docs.cardano.org/cardano-testnets/tools/faucet/))
+- The app running locally (see **Getting Started** below) or deployed
+
+**Step 1 — Open the app and connect your wallet**
+1. Go to the home page. You'll see the landing page with a live animated demo race showing two assets competing in real time using live Pyth prices.
+2. Click **Connect Wallet** in the top right and approve the connection in your wallet extension.
+
+**Step 2 — Create a game**
+1. Click **Create Game** in the navigation.
+2. Choose your asset (e.g. `ADA/USD`), set a bet amount (minimum 2 ADA recommended for testnet), and pick a duel duration.
+3. Click **Create Game**. Your wallet will prompt you to sign a transaction — this is the `depositA` transaction that mints an authenticity NFT and locks your bet on-chain.
+4. Approve the transaction. Once submitted, you'll be redirected to the **Game Lobby**.
+
+**Step 3 — See the live race preview**
+1. On the Game Lobby page you'll immediately see the race visualization running — two asset price bars moving in real time, powered by Pyth Hermes prices.
+2. A message reads *"Waiting for opponent to join before the race starts…"* — this is the demo state. The race preview is fully functional even without Player 2.
+3. You can copy your **Game ID** or **Invite Link** from this screen to share with a second player.
+
+**Step 4 — What happens when Player 2 joins** *(architecture demo)*
+> The browser-side join transaction is the part that isn't fully wired up due to the CBOR serialization issue described above. To see the full flow including Player B joining and the resolve step, run the Node.js scripts directly:
+
+```bash
+cd pyth-coin-stable-front/src
+
+# Make sure your .env has BLOCKFROST_ID, PYTH_TOKEN, BACKEND_PKH, MNEMONIC, PYTH_POLICY_ID
+node depositA.mjs   # Creates the duel on-chain
+node depositB.mjs   # Player B joins, Pyth prices verified on-chain
+node resolve.mjs    # Resolves the duel, winner gets the pot + horseshoe token
+```
+
+Each script prints the transaction hash and a Cardano explorer link so you can follow every step on-chain.
 
 ---
 

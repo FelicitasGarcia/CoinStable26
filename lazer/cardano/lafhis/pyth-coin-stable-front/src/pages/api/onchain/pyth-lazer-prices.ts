@@ -45,10 +45,10 @@ export default async function handler(
     }
 
     const parsedPrices = (resp.parsed?.priceFeeds ?? []).map(
-      (f: { priceFeedId: number; price: number; exponent: number }) => ({
-        feedId: f.priceFeedId,
-        price: f.price,
-        exponent: f.exponent,
+      (f: { priceFeedId: unknown; price: unknown; exponent: unknown }) => ({
+        feedId: Number(f.priceFeedId),
+        price: Number(f.price),   // SDK returns string — must be Number() for Plutus integer encoding
+        exponent: Number(f.exponent),
       }),
     );
 

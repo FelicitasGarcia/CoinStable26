@@ -199,19 +199,20 @@ export default function GameLobbyPage() {
                   </div>
                 )}
 
-                {game.status === "ready" && game.playerTwoRate && (
-                  <div className="mt-4 rounded-xl border border-violet-500/20 bg-slate-950/65 p-4">
-                    <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-violet-300">
-                      Live Race
-                    </p>
-                    <DuelPreview
-                      symA={game.config.rate}
-                      symB={game.playerTwoRate}
-                      autoStart
-                      duration={game.config.duration}
-                    />
-                  </div>
-                )}
+                <div className="mt-4 rounded-xl border border-violet-500/20 bg-slate-950/65 p-4">
+                  <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-violet-300">
+                    Live Race
+                  </p>
+                  <DuelPreview
+                    symA={game.config.rate}
+                    symB={game.playerTwoRate ?? "BTC/USD"}
+                    autoStart={game.status === "ready"}
+                    duration={game.config.duration}
+                  />
+                  {game.status !== "ready" && (
+                    <p className="mt-3 text-xs text-violet-100/50">Waiting for opponent to join before the race starts…</p>
+                  )}
+                </div>
 
                 {/* Resolve section — shown when deadline has passed and game is active */}
                 {game.status === "ready" &&
