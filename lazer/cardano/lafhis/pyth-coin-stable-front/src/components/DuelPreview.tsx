@@ -123,7 +123,7 @@ function Lane({
           <img
             src="/img/horseshoe.png"
             alt="trophy"
-            className="pointer-events-none absolute -top-10 left-1/2 z-10 h-10 w-10 -translate-x-1/2 object-contain drop-shadow-[0_0_8px_rgba(251,191,36,0.8)]"
+            className="pointer-events-none absolute -top-16 left-1/2 z-10 h-16 w-16 -translate-x-1/2 object-contain drop-shadow-[0_0_16px_rgba(251,191,36,0.9)]"
             style={{ animation: "trophy-float 1.8s ease-in-out infinite" }}
           />
           <style>{`
@@ -316,7 +316,7 @@ export default function DuelPreview({
         </span>
       </div>
 
-      <div className={`flex flex-col gap-3 ${winner ? "pt-8" : ""} transition-all duration-500`}>
+      <div className={`flex flex-col gap-3 ${winner ? "pt-14" : ""} transition-all duration-500`}>
         <Lane sym={symA} color="violet" currentPrice={currentPrices[symA] ?? null}
           pctChange={pctA} scaleMax={scaleMax}
           leading={raceState === "running" && aLeading}

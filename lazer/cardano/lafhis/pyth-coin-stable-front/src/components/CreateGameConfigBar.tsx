@@ -35,7 +35,7 @@ export default function CreateGameConfigBar({
     [selectedDuration],
   );
   const betAda = Number(selectedBet);
-  const canCreate = Number.isFinite(betAda) && betAda > 0 && !creating;
+  const canCreate = Number.isFinite(betAda) && betAda >= 5 && !creating;
 
   return (
     <section className="rounded-2xl border border-violet-500/25 bg-slate-900/70 p-4 md:p-6">
@@ -68,11 +68,11 @@ export default function CreateGameConfigBar({
           <div className="flex items-center gap-2 rounded-lg border border-violet-500/35 bg-slate-950/70 px-3 py-2">
             <input
               type="number"
-              min="0"
-              step="0.01"
+              min="5"
+              step="0.5"
               value={selectedBet}
               onChange={(e) => setSelectedBet(e.target.value)}
-              placeholder="Amount"
+              placeholder="Min 5"
               className="bet-input-no-spinner w-full bg-transparent text-xs font-bold text-slate-100 outline-none"
             />
             <span className="text-xs font-bold text-violet-100/80">ADA</span>
